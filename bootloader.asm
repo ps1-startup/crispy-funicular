@@ -31,6 +31,7 @@ start:
     cmp di, 0
     je .loaded
 
+    push si
     call lba_to_chs
 
     mov ah, 0x02               ; BIOS read sectors
@@ -59,7 +60,6 @@ start:
 ; Output: CH = cylinder, DH = head, CL = sector (1-based)
 lba_to_chs:
     push ax
-    push bx
     push dx
 
     mov ax, si
@@ -76,7 +76,6 @@ lba_to_chs:
     mov dh, dl
 
     pop dx
-    pop bx
     pop ax
     ret
 
