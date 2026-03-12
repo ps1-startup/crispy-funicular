@@ -1,4 +1,4 @@
-; BIOS bootloader for Crispy Funicular OS
+; Simple BIOS bootloader for Crispy Funicular OS
 ; Loads kernel.bin from subsequent sectors into 0x10000 and enters protected mode.
 
 BITS 16
@@ -19,25 +19,35 @@ start:
     mov ax, 0x0013
     int 0x10
 
-    ; Try INT 13h extensions first (works for El Torito emulated/non-emulated devices)
-    mov ah, 0x41
-    mov bx, 0x55AA
+    ; Load kernel sectors from floppy image (starting at LBA 1)
+    mov ax, KERNEL_SEG
+    mov es, ax
+    xor bx, bx
+
+    mov si, 1                  ; LBA start (sector after boot sector)
+    mov di, KERNEL_SECTORS     ; Number of sectors to load
+
+.load_loop:
+    cmp di, 0
+    je .loaded
+
+    push si
+    call lba_to_chs
+
+    mov ah, 0x02               ; BIOS read sectors
+    mov al, 1                  ; read one sector per iteration
     mov dl, [boot_drive]
     int 0x13
-    jc .legacy_chs
-    cmp bx, 0xAA55
-    jne .legacy_chs
-    test cx, 1
-    jz .legacy_chs
+    jc disk_error
 
-    call load_kernel_lba
-    jmp short .loaded
-
-.legacy_chs:
-    call load_kernel_chs
+    add bx, 512
+    inc si
+    dec di
+    jmp .load_loop
 
 .loaded:
     cli
+
     lgdt [gdt_descriptor]
 
     mov eax, cr0
@@ -46,86 +56,26 @@ start:
 
     jmp CODE_SEL:protected_mode_entry
 
-; LBA loader via INT 13h AH=42h
-load_kernel_lba:
-    mov bx, 0x0000              ; destination offset in KERNEL_SEG
-    mov si, 1                   ; starting LBA (sector after boot sector)
-    mov di, KERNEL_SECTORS
-
-.lba_loop:
-    cmp di, 0
-    je .done
-
-    mov word [dap + 4], bx      ; buffer offset
-    mov word [dap + 6], KERNEL_SEG
-    mov word [dap + 8], si      ; 64-bit LBA (low 16 bits enough here)
-    mov word [dap + 10], 0
-    mov dword [dap + 12], 0
-
-    mov si, dap
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    int 0x13
-    jc disk_error
-
-    add bx, 512
-    inc word [dap + 8]
-    dec di
-    jmp .lba_loop
-
-.done:
-    ret
-
-; Legacy CHS fallback for old BIOSes
-load_kernel_chs:
-    mov ax, KERNEL_SEG
-    mov es, ax
-    xor bx, bx
-    mov si, 1
-    mov di, KERNEL_SECTORS
-
-.chs_loop:
-    cmp di, 0
-    je .done
-
-    call lba_to_chs
-
-    mov ah, 0x02
-    mov al, 1
-    mov dl, [boot_drive]
-    int 0x13
-    jc disk_error
-
-    add bx, 512
-    inc si
-    dec di
-    jmp .chs_loop
-
-.done:
-    ret
-
 ; Input: SI = LBA sector
 ; Output: CH = cylinder, DH = head, CL = sector (1-based)
 lba_to_chs:
     push ax
-    push bx
     push dx
 
     mov ax, si
     xor dx, dx
     mov bx, SECTORS_PER_TRACK
-    div bx
+    div bx                      ; ax = temp, dx = sector index
     mov cl, dl
     inc cl
 
     xor dx, dx
     mov bx, HEADS
-    div bx
+    div bx                      ; ax = cylinder, dx = head
     mov ch, al
     mov dh, dl
 
     pop dx
-    pop bx
     pop ax
     ret
 
@@ -156,21 +106,8 @@ protected_mode_entry:
 
 [BITS 16]
 
-boot_drive db 0
-
 disk_error_msg db 'Disk read error', 0
-
-; INT 13h Extensions Disk Address Packet
-; 00 size=16, 01 reserved, 02 sector count, 04 buffer offset, 06 buffer segment,
-; 08 LBA (qword)
-dap:
-    db 16
-    db 0
-    dw 1
-    dw 0
-    dw KERNEL_SEG
-    dd 1
-    dd 0
+boot_drive db 0
 
 SECTORS_PER_TRACK equ 18
 HEADS equ 2
@@ -178,11 +115,12 @@ KERNEL_SEG equ 0x1000
 KERNEL_LINEAR_ADDR equ 0x10000
 KERNEL_SECTORS equ 64
 
+; GDT
 align 8
 gdt_start:
-    dq 0x0000000000000000
-    dq 0x00CF9A000000FFFF
-    dq 0x00CF92000000FFFF
+    dq 0x0000000000000000      ; null
+    dq 0x00CF9A000000FFFF      ; code 0x08
+    dq 0x00CF92000000FFFF      ; data 0x10
 gdt_end:
 
 gdt_descriptor:
